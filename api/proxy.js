@@ -1,19 +1,27 @@
-const express = require("express");
+// api/proxy.js
 const { createProxyMiddleware } = require("http-proxy-middleware");
+const express = require("express");
 const cors = require("cors");
-const app = express();
-const PORT = 3500;
 
-app.use(cors({ origin: "*" }));
+// Convert middleware to promise-based function for serverless
+const runMiddleware = (req, res, fn) => {
+  return new Promise((resolve, reject) => {
+    fn(req, res, (result) => {
+      if (result instanceof Error) {
+        return reject(result);
+      }
+      return resolve(result);
+    });
+  });
+};
 
-app.use((req, res, next) => {
+const validateUrl = async (req, res) => {
   try {
     if (!req.query.url) {
       return res.status(400).send("Missing URL parameter");
     }
 
     const decodedUrl = decodeURIComponent(req.query.url);
-
     const hasProtocol = /^https?:\/\//i.test(decodedUrl);
     const finalUrl = hasProtocol ? decodedUrl : `http://${decodedUrl}`;
 
@@ -23,18 +31,28 @@ app.use((req, res, next) => {
     }
 
     req.targetUrl = parsedUrl;
-    next();
+    return true;
   } catch (error) {
     console.error("URL validation error:", error.message);
     res.status(400).send(`Invalid URL: ${error.message}`);
+    return false;
   }
-});
+};
 
-app.use(
-  "/",
-  createProxyMiddleware({
-    router: (req) => req.targetUrl.origin,
-    pathRewrite: (path, req) => {
+const handler = async (req, res) => {
+  // Enable CORS
+  await runMiddleware(req, res, cors());
+
+  // Validate URL
+  const isValid = await validateUrl(req, res);
+  if (!isValid) return;
+
+  // Configure proxy
+  const proxy = createProxyMiddleware({
+    target: req.targetUrl.origin,
+    changeOrigin: true,
+    followRedirects: true,
+    pathRewrite: (path) => {
       const params = new URLSearchParams(req.query);
       params.delete("url");
       const queryString = params.toString();
@@ -42,20 +60,17 @@ app.use(
         ? `${req.targetUrl.pathname}?${queryString}`
         : req.targetUrl.pathname;
     },
-    changeOrigin: true,
-    followRedirects: true,
-    timeout: 1000000,
-    proxyTimeout: 1500000,
     onProxyReq: (proxyReq, req) => {
       Object.entries(req.headers).forEach(([key, value]) => {
         if (key.toLowerCase() !== "host") {
           proxyReq.setHeader(key, value);
         }
       });
-    }
-  })
-);
+    },
+  });
 
-app.listen(PORT, () => {
-  console.log(`Proxy server running on port ${PORT}`);
-});
+  // Run the proxy
+  await runMiddleware(req, res, proxy);
+};
+
+module.exports = handler;
