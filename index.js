@@ -1,72 +1,61 @@
-require("dotenv").config();
-const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
-const routes = require("./router");
-
-const axios = require('axios');
+const express = require("express");
+const { createProxyMiddleware } = require("http-proxy-middleware");
 const cors = require("cors");
-const { Stream, Playlist } = require("./database");
-
 const app = express();
-const PORT = 8000;
+const PORT = 3500;
 
-const IPTV_URL = 'http://r360.fyi:2103/enAWHBHe/aPQdnzc/12071';
+app.use(cors({ origin: "*" }));
 
-app.use(cors({
-  origin : "*"
-}))
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-app.use(routes);
-Stream
-Playlist
-
-
-app.use('/proxy', async (req, res, next) => {
-  if (!req.query.url) {
-    return res.status(400).json({ error: 'URL parameter is required' });
-  }
-
+app.use((req, res, next) => {
   try {
-    const targetUrl = decodeURIComponent(req.query.url);
-    const response = await fetch(targetUrl);
-    
-    if (!response.ok) {
-      throw new Error(`Failed to fetch stream: ${response.statusText}`);
+    if (!req.query.url) {
+      return res.status(400).send("Missing URL parameter");
     }
 
-    // Set proper headers for MPEG-TS
-    res.header('Content-Type', 'video/mp2t');
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Cache-Control', 'no-cache');
+    const decodedUrl = decodeURIComponent(req.query.url);
 
-    // Stream the content directly
-    for await (const chunk of response.body) {
-      res.write(chunk);
+    const hasProtocol = /^https?:\/\//i.test(decodedUrl);
+    const finalUrl = hasProtocol ? decodedUrl : `http://${decodedUrl}`;
+
+    const parsedUrl = new URL(finalUrl);
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      return res.status(400).send("Invalid protocol");
     }
-    res.end();
+
+    req.targetUrl = parsedUrl;
+    next();
   } catch (error) {
-    console.log('error', error.message);
-    
-    res.status(500).send('Proxy error');
+    console.error("URL validation error:", error.message);
+    res.status(400).send(`Invalid URL: ${error.message}`);
   }
 });
 
-app.get('/stream', async (req, res) => {
-  try {
-    res.setHeader('Content-Type', 'video/mp2t');
-
-    const response = await axios.get(IPTV_URL, { responseType: 'stream' });
-    response.data.pipe(res);
-
-  } catch (error) {
-    console.error('error', error.message);
-    res.status(500).send('err.');
-  }
-});
+app.use(
+  "/",
+  createProxyMiddleware({
+    router: (req) => req.targetUrl.origin,
+    pathRewrite: (path, req) => {
+      const params = new URLSearchParams(req.query);
+      params.delete("url");
+      const queryString = params.toString();
+      return queryString
+        ? `${req.targetUrl.pathname}?${queryString}`
+        : req.targetUrl.pathname;
+    },
+    changeOrigin: true,
+    followRedirects: true,
+    timeout: 1000000,
+    proxyTimeout: 1500000,
+    onProxyReq: (proxyReq, req) => {
+      Object.entries(req.headers).forEach(([key, value]) => {
+        if (key.toLowerCase() !== "host") {
+          proxyReq.setHeader(key, value);
+        }
+      });
+    }
+  })
+);
 
 app.listen(PORT, () => {
-  console.log(`Server is running at http://localhost:${PORT}/stream`);
+  console.log(`Proxy server running on port ${PORT}`);
 });
