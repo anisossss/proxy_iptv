@@ -1,10 +1,66 @@
+require("dotenv").config();
 const express = require("express");
+const bodyParser = require("body-parser");
+const { Sequelize, DataTypes } = require("sequelize");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const cors = require("cors");
 const app = express();
-const PORT = 3500;
+const PORT = process.env.PORT || 3500;
 
 app.use(cors({ origin: "*" }));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+const sequelize = new Sequelize(
+  process.env.DB_NAME,
+  process.env.DB_USER,
+  process.env.DB_PASSWORD,
+  {
+    host: process.env.DB_HOST,
+    dialect: "mysql",
+    port: process.env.DB_PORT,
+    logging: false
+  }
+);
+
+const Playlist = sequelize.define("Playlist", {
+  host: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  username: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  password: {
+    type: DataTypes.STRING,
+    allowNull: true
+  }
+});
+
+sequelize
+  .sync({ alter: false })
+  .then(() => console.log("✅ Database synced with MySQL"))
+  .catch((err) => console.error("❌ Error syncing database:", err));
+
+app.post("/playlist", async (req, res) => {
+  try {
+    const { host, username, password } = req.body;
+    if (!host || !username || !password) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    const exist = await Playlist.findOne({
+      where: { host, username, password }
+    });
+    if (exist) {
+      return res.status(400).json({ error: "Playlist already exists" });
+    }
+    const playlist = await Playlist.create({ host:decodeURIComponent(host), username, password });
+    res.status(200).json({ message: "Playlist created", playlist });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
 app.use((req, res, next) => {
   try {
